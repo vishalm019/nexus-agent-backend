@@ -4,12 +4,57 @@ from flask import Flask,request,jsonify, send_file
 import psycopg2
 from db_config import DB_CONFIG
 from psycopg2.extras import RealDictCursor
+from dotenv import load_dotenv
+import requests
+import time
+from groq import Groq
+import certifi
+import os
 
+os.environ["REQUESTS_CA_BUNDLE"] = certifi.where()
+os.environ["SSL_CERT_FILE"] = certifi.where()
+
+load_dotenv()
 app = Flask(__name__)
+
+# API Configurations
+HF_TOKEN = os.getenv("HF_TOKEN")
+MODEL_ID = os.getenv("HF_EMBEDDING_MODEL")
+HF_API_BASE = os.getenv("HF_API_BASE")
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL")
+
+
+client = Groq(api_key=GROQ_API_KEY)
+
+def get_embedding(text):
+    headers = {
+        "Authorization": f"Bearer {HF_TOKEN}",
+        "x-wait-for-model": "true" 
+    }
+    API_URL = f"{HF_API_BASE}/{MODEL_ID}/pipeline/feature-extraction"
+    
+    response = requests.post(API_URL, headers=headers, json={"inputs": text})
+    
+    if response.status_code == 200:
+        result = response.json()
+
+        while isinstance(result, list) and len(result) > 0 and isinstance(result[0], list):
+            result = result[0]
+        return result
+    else:
+        fallback_url = f"https://router.huggingface.co/hf-inference/models/{MODEL_ID}"
+        response = requests.post(fallback_url, headers=headers, json={"inputs": text})
+        if response.status_code == 200:
+            return response.json()[0]
+        raise Exception(f"HF API Error: {response.status_code} - {response.text}")
 
 def execute_query(query, params = None, fetch=False):
     conn = psycopg2.connect(**DB_CONFIG)
     cur = conn.cursor()
+    cur.execute("SELECT current_database(), inet_server_port(), current_schema()")
+    print("DB DEBUG:", cur.fetchone())
     try:
         print(query,params)
         cur.execute(query, params)
@@ -133,6 +178,70 @@ def send_message():
         return jsonify({"message": "Message sent successfully","id": id}), 201
     except Exception as e: 
         return jsonify({"error": str(e)}), 500
+
+@app.route('/ingest',methods=['POST'])
+def ingest():
+    data = request.get_json()
+    required_fields = ["userid","content"]
+    if not all(field in data for field in required_fields):
+        return jsonify({"error": "Missing required fields"}), 400
+    try:
+        embedding = get_embedding(data["content"])
+        print('doing')
+        query = """INSERT INTO knowledge_base (user_id, content, embedding) VALUES (%s, %s, %s) RETURNING id"""
+        params = (data["userid"], data["content"], embedding)
+        record_id = execute_query(query, params, fetch=True)[0][0]
+        
+        return jsonify({"message": "Success", "id": record_id}), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/search', methods=['POST'])
+def search_knowledge():
+    data = request.get_json()
+    if "query" not in data:
+        return jsonify({"error": "Missing search query"}), 400
+
+    try:
+        query_vector = get_embedding(data["query"])
+        query = """SELECT content, 1 - (embedding <=> %s::vector) AS similarity  FROM knowledge_base  ORDER BY similarity DESC  LIMIT 3"""
+
+        results = execute_dict_query(query, (query_vector,), fetch=True)
+
+        return jsonify({"query": data["query"],"matches":results }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/agent/chat', methods=['POST'])
+def agent_chat():
+    data = request.get_json()
+    user_query = data.get("message")
+    
+    query_vector = get_embedding(user_query)
+    search_results = execute_dict_query(
+        "SELECT content FROM knowledge_base ORDER BY embedding <=> %s::vector LIMIT 2", 
+        (query_vector,), fetch=True
+    )
+    
+    context = "\n".join([r['content'] for r in search_results])
+
+    system_prompt = f"""
+    You are Vishal's Personal Assistant. 
+    Use the following retrieved context to answer the user's question accurately.
+    Context: {context}
+    
+    If the context doesn't have the answer, use your own knowledge but mention that it's not in the records.
+    """
+
+    completion = client.chat.completions.create(
+        model="llama-3.1-8b-instant",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_query}
+        ]
+    )
+    return jsonify({"response": completion.choices[0].message.content})
 
 if __name__ == '__main__':    
     app.run(host="0.0.0.0",port=3400,debug=True)   

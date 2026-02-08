@@ -21,7 +21,6 @@ def execute_query(query, params = None, fetch=False):
     conn = psycopg2.connect(**DB_CONFIG)
     cur = conn.cursor()
     try:
-        print(query,params)
         cur.execute(query, params)
         conn.commit()
         if fetch:
@@ -40,7 +39,6 @@ def execute_dict_query(query, params = None, fetch=False):
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
         try:
-            print(query,params)
             cur.execute(query, params)
             conn.commit()
             if fetch:
@@ -69,8 +67,6 @@ def get_embedding(text):
     API_URL = os.getenv("HUGGING_FACE_URL")
     
     response = requests.post(API_URL, headers=headers, json={"inputs": text})
-    
-    print(f"DEBUG: Status Code: {response.status_code}")
     
     if response.status_code == 200:
         result = response.json()
@@ -117,7 +113,6 @@ def login():
         (data["email"],),
         fetch=True
     )
-    print(user[0]['userid'],'user')
     stored_hash = user[0]["password"]
 
     if not user or not check_password_hash(stored_hash, data["password"]):
@@ -176,11 +171,8 @@ def get_task_by_id():
 @app.route("/chat/session", methods=["POST"])
 @jwt_required()
 def create_session():
-    print('hi')
     userid = int(get_jwt_identity())
-    print(userid,'useri')
     data = request.get_json()
-    print(data,'data')
     required_fields = ["created_at"]
     if not all(field in data for field in required_fields):
         return jsonify({"error": "Missing required fields"}), 400
@@ -242,7 +234,6 @@ def ingest():
         return jsonify({"error": "Missing required fields"}), 400
     try:
         embedding = get_embedding(data["content"])
-        print(embedding,'em')
         query = """INSERT INTO knowledge_base (user_id, content, embedding) VALUES (%s, %s, %s) RETURNING id"""
         params = (userid, data["content"], embedding)
         record_id = execute_query(query, params, fetch=True)[0][0]
@@ -324,8 +315,6 @@ def agent_chat():
     choice = completion.choices[0]
 
     final_response = choice.message.content or ""
-    print("FINISH REASON:", choice.finish_reason)
-    print("MESSAGE:", choice.message)
 
     if choice.finish_reason == "tool_calls":
         tool_call = choice.message.tool_calls[0]
@@ -333,7 +322,6 @@ def agent_chat():
         tool_name = tool_call.function.name
         args = tool_call.function.arguments
         args = json.loads(tool_call.function.arguments)
-        print(args,'argss')
         try:
             if tool_name == "update_task":
                 update_task(userid, **args)
@@ -347,7 +335,6 @@ def agent_chat():
                 delete_task(userid, **args)
                 final_response = "I’ve deleted the task."
         except Exception as e:
-            print("Tool execution error:", e)
             final_response = f"Failed to execute {tool_name}: {str(e)}"
     
     execute_query("INSERT INTO messages (session_id,role,content,msg_time) VALUES (%s,%s,%s,%s)",(session_id,'user',data.get("message"),datetime.now()))

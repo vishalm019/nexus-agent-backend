@@ -354,6 +354,5 @@ def agent_chat():
     execute_query("INSERT INTO messages (session_id,role,content,msg_time) VALUES (%s,%s,%s,%s)",(session_id,'assistant',final_response,datetime.now()))
     return jsonify({"response": final_response})
 
-
 if __name__ == '__main__':    
-    app.run(host="0.0.0.0",port=3400,debug=True)   
+    app.run(host="0.0.0.0",port=3400,debug=True)
